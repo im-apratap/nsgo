@@ -117,7 +117,8 @@ func TestToastSurfaceStyles(t *testing.T) {
 		if s.Background != want.fill || s.BorderColor != want.border || s.BorderWidth != want.width || s.CornerRadius != want.radius {
 			t.Errorf("%s surface: background %x, border %x at %v pt, radius %v", want.id, s.Background, s.BorderColor, s.BorderWidth, s.CornerRadius)
 		}
-		if s.Transition.Duration != 200*time.Millisecond || s.Opacity != 1 {
+		// The motion is Sonner's entering duration, the app's Motion's.
+		if s.Transition.Duration != toast.SonnerMotion().Duration || s.Opacity != 1 {
 			t.Errorf("%s lost its transition or starting phase did not end", want.id)
 		}
 	}
@@ -320,8 +321,8 @@ func TestToastsExpandedTakePresses(t *testing.T) {
 	})
 }
 
-// TestToastLimit keeps Limit toasts showing and tells a toast's OnClose
-// when it has gone, replaced or timed out.
+// TestToastLimit keeps Limit toasts showing, the oldest first, and tells
+// a toast's OnClose when it has gone, merged into or timed out.
 func TestToastLimit(t *testing.T) {
 	each(t, func(t *testing.T, e core.Environment) {
 		var toaster *Toaster
@@ -334,12 +335,13 @@ func TestToastLimit(t *testing.T) {
 		toaster.Show(toastOf("a", ToastPlain, "A", "", "", nil))
 		toaster.Show(toastOf("b", ToastPlain, "B", "", "", nil))
 		app.Advance(100 * time.Millisecond)
-		if app.Exists("a") || !app.Exists("b") {
-			t.Fatal("Limit 1 did not show the newest alone")
+		if !app.Exists("a") || app.Exists("b") {
+			t.Fatal("Limit 1 did not show the oldest alone")
 		}
 		onClose := func() { closed++ }
-		toaster.Show(ToastContent{ID: "c", Title: "C", Duration: time.Second, OnClose: onClose})
-		toaster.Show(ToastContent{ID: "c", Title: "C again", Duration: time.Second, OnClose: onClose})
+		// An error shows over them, and a repeat of it merges into it.
+		toaster.Show(ToastContent{ID: "c", Type: ToastError, Title: "C", Duration: time.Second, OnClose: onClose})
+		toaster.Show(ToastContent{ID: "c", Type: ToastError, Title: "C again", Duration: time.Second, OnClose: onClose})
 		if closed != 1 {
 			t.Fatalf("replacing a toast closed %d", closed)
 		}
@@ -414,4 +416,47 @@ func toastY(app *nsgotest.App, id string) core.Points {
 // toastOf is a toast's content, short.
 func toastOf(id string, kind ToastType, title, description, action string, onAction func()) ToastContent {
 	return ToastContent{ID: id, Type: kind, Title: title, Description: description, Action: action, OnAction: onAction}
+}
+
+// TestToastsQueue shows toasts in turn with a limit, an error before
+// those waiting, a polite status region, and timeouts paused while the
+// app is in the background.
+func TestToastsQueue(t *testing.T) {
+	each(t, func(t *testing.T, e core.Environment) {
+		var toaster *Toaster
+		var waiting int
+		app, _ := start(t, e, func(cx *core.Scope) core.Node {
+			toaster = NewToaster(cx)
+			toaster.Limit = 1
+			return core.View{Style: core.Style{FlexGrow: 1}, Children: []core.Node{
+				core.Dynamic(func(*core.Scope) core.Node { waiting = toaster.Waiting(); return core.View{} }),
+				Toasts{Toaster: toaster, TestID: "toasts", Polite: true},
+			}}
+		})
+		toaster.Show(ToastContent{ID: "first", Title: "First", Duration: 2 * time.Second})
+		toaster.Show(ToastContent{ID: "second", Title: "Second", Duration: 2 * time.Second})
+		app.Advance(time.Second)
+		if waiting != 1 || !app.Exists("first") || app.Exists("second") {
+			t.Fatalf("waiting %d, want the first showing and one behind it\n%s", waiting, app.Dump())
+		}
+		if v := app.Find("first"); v.Props.Role != core.RoleStatus {
+			t.Errorf("a polite toast reads %v, want a status region", v.Props.Role)
+		}
+		// An error shows before the toasts waiting.
+		toaster.Show(ToastContent{ID: "bad", Type: ToastError, Title: "Bad", Duration: 2 * time.Second})
+		app.Advance(time.Second)
+		if waiting != 2 || !app.Exists("bad") {
+			t.Fatalf("waiting %d, want the error showing and two behind it\n%s", waiting, app.Dump())
+		}
+		if v := app.Find("bad"); v.Props.Role != core.RoleAlert {
+			t.Errorf("an error reads %v, want an alert", v.Props.Role)
+		}
+		// A window in the background holds them.
+		app.SetEnvironment(core.Environment{Lifecycle: core.LifecycleBackground})
+		app.Advance(5 * time.Second)
+		if !app.Exists("bad") {
+			t.Fatal("a toast timed out while the app was in the background")
+		}
+		app.SetEnvironment(core.Environment{Lifecycle: core.LifecycleActive})
+	})
 }

@@ -94,6 +94,10 @@ type Toast struct {
 	LabelFunc func() string
 	// OnPress makes the toast itself a button. Child controls such as action buttons keep their own presses.
 	OnPress func()
+	// Polite reads it as a status, a polite live region, rather than an
+	// alert: for a toast that reports something done, not a failure. A
+	// toast with OnPress stays a button.
+	Polite bool
 	// OnDismissRequest: the user swiped it away; dismiss it. It stays
 	// where the swipe took it.
 	OnDismissRequest func()
@@ -185,6 +189,9 @@ func (t Toast) Render(cx *core.Scope) core.Node {
 		rootLabel = ""
 	}
 	role := core.RoleAlert
+	if t.Polite {
+		role = core.RoleStatus
+	}
 	if t.OnPress != nil {
 		role = core.RoleButton
 	}

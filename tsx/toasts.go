@@ -119,6 +119,8 @@ func (r *runtime) toastManagerClass() js.Value {
 		_ = o.Set("value", e.Value)
 		_ = o.Set("status", map[toast.Status]string{toast.Starting: "starting", toast.Present: "present",
 			toast.Ending: "ending"}[e.Status])
+		_ = o.Set("priority", map[toast.Priority]string{toast.PriorityNormal: "normal",
+			toast.PriorityHigh: "high"}[e.Priority])
 		return o
 	}
 	entries := func(es []toast.Entry[string, js.Value]) js.Value {
@@ -161,7 +163,9 @@ func (r *runtime) toastManagerClass() js.Value {
 	})
 	method("entries", func(m *toastManager, call js.FunctionCall) js.Value { return entries(m.Entries()) })
 	method("visible", func(m *toastManager, call js.FunctionCall) js.Value {
-		return entries(m.Visible(int(arg(call, 0).ToInteger())))
+		// The limit queues the rest behind the toasts showing.
+		m.Limit = int(arg(call, 0).ToInteger())
+		return entries(m.Visible())
 	})
 	method("get", func(m *toastManager, call js.FunctionCall) js.Value {
 		v, ok := m.Get(arg(call, 0).String())

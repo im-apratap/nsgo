@@ -1,6 +1,8 @@
 package toast
 
 import (
+	"cmp"
+	"slices"
 	"time"
 
 	"github.com/nsgo-dev/nsgo/core"
@@ -24,6 +26,18 @@ const (
 	// Ending is a toast leaving, for the motion's ExitDuration,
 	// before it is removed.
 	Ending
+)
+
+// Priority orders the toasts waiting to show: a higher one shows before
+// every lower one, and the oldest of one priority before the newer.
+type Priority int
+
+const (
+	// PriorityNormal is a toast pushed without a priority, shown in turn.
+	PriorityNormal Priority = iota
+	// PriorityHigh shows before the toasts waiting of PriorityNormal, as
+	// an error or the progress of a running job does.
+	PriorityHigh
 )
 
 // Motion are the tokens of a Manager and a Stack; a zero
@@ -76,9 +90,10 @@ func (m Motion) resolved() Motion {
 
 // Entry is a toast a Manager keeps.
 type Entry[K comparable, V any] struct {
-	ID     K
-	Value  V
-	Status Status
+	ID       K
+	Value    V
+	Status   Status
+	Priority Priority
 }
 
 // Advance is what an Advance changed: the toasts it presented, the
@@ -106,22 +121,41 @@ type managedToast[K comparable, V any] struct {
 // calls Advance on a timer while any is shown, passing whether the stack
 // is expanded. Times are the app's clock's, Scope.Now, so a test's manual
 // clock moves them. The zero value has no toasts and Sonner's motion.
+//
+// A Limit makes the toasts a queue: the oldest of the highest priority
+// show, and those beyond the limit wait in their place, their motion and
+// their timeout not started until they show, as a list of notifications
+// does. Waiting says how many wait.
 type Manager[K comparable, V any] struct {
-	Motion  Motion
+	Motion Motion
+	// Limit is how many toasts show at once; 0 shows every one.
+	Limit   int
 	entries []managedToast[K, V]
 }
 
-// Push adds the newest toast, replacing one with the same id, whose value
-// it returns. A timeout of 0 keeps it until it is dismissed.
+// Push adds a toast, and returns the value of the one with its id, which
+// it merges into rather than adding another: that one keeps its place,
+// and one leaving shows again. The timeout and priority are the newest
+// ones'. A timeout of 0 keeps it until it is dismissed.
 func (m *Manager[K, V]) Push(id K, value V, timeout time.Duration, now time.Time) (replaced V, ok bool) {
-	for i, e := range m.entries {
+	return m.PushPriority(id, value, timeout, PriorityNormal, now)
+}
+
+// PushPriority is Push with a priority: a PriorityHigh toast shows before
+// the toasts waiting of PriorityNormal.
+func (m *Manager[K, V]) PushPriority(id K, value V, timeout time.Duration, priority Priority, now time.Time) (replaced V, ok bool) {
+	for i := range m.entries {
+		e := &m.entries[i]
 		if e.ID == id {
 			replaced, ok = e.Value, true
-			m.entries = append(m.entries[:i], m.entries[i+1:]...)
-			break
+			e.Value, e.Priority, e.timeout, e.timed, e.lastCheck = value, priority, timeout, timeout > 0, now
+			if e.Status == Ending {
+				e.Status, e.elapsed = Starting, 0
+			}
+			return replaced, ok
 		}
 	}
-	m.entries = append(m.entries, managedToast[K, V]{Entry: Entry[K, V]{ID: id, Value: value},
+	m.entries = append(m.entries, managedToast[K, V]{Entry: Entry[K, V]{ID: id, Value: value, Priority: priority},
 		timeout: timeout, timed: timeout > 0, lastCheck: now})
 	return replaced, ok
 }
@@ -159,14 +193,19 @@ func (e *managedToast[K, V]) end(now time.Time) {
 }
 
 // Advance moves the lifecycle on to now; paused holds present toasts'
-// timeouts, as while the stack is expanded.
+// timeouts, as while the stack is expanded or the app is in the
+// background. A toast waiting behind Limit's does not move at all.
 func (m *Manager[K, V]) Advance(now time.Time, paused bool) Advance[K, V] {
 	motion := m.Motion.resolved()
+	shown := m.shown()
 	var a Advance[K, V]
 	for i := range m.entries {
 		e := &m.entries[i]
 		delta := max(now.Sub(e.lastCheck), 0)
 		e.lastCheck = now
+		if e.Status != Ending && !shown[i] {
+			continue // waiting: its motion and timeout start when it shows
+		}
 		switch e.Status {
 		case Starting:
 			if e.elapsed += delta; e.elapsed >= motion.Duration {
@@ -209,27 +248,65 @@ func (m *Manager[K, V]) Entries() []Entry[K, V] {
 	return out
 }
 
-// Visible returns the newest limit toasts that are not ending and every
-// ending one, oldest first: what a Stack shows.
-func (m *Manager[K, V]) Visible(limit int) []Entry[K, V] {
-	active := 0
-	for _, e := range m.entries {
-		if e.Status != Ending {
-			active++
-		}
-	}
-	skip := max(active-limit, 0)
+// Visible returns the toasts a Stack shows, oldest first: those Limit
+// leaves room for, which are the highest priorities and then the oldest,
+// and every ending one as it leaves.
+func (m *Manager[K, V]) Visible() []Entry[K, V] {
+	shown := m.shown()
 	var out []Entry[K, V]
-	for _, e := range m.entries {
-		if e.Status != Ending {
-			if skip > 0 {
-				skip--
-				continue
-			}
+	for i, e := range m.entries {
+		if shown[i] {
+			out = append(out, e.Entry)
 		}
-		out = append(out, e.Entry)
 	}
 	return out
+}
+
+// Waiting returns how many toasts wait behind the ones showing, for a
+// stack that shows how many are to come.
+func (m *Manager[K, V]) Waiting() int {
+	shown := m.shown()
+	n := 0
+	for i, e := range m.entries {
+		if e.Status != Ending && !shown[i] {
+			n++
+		}
+	}
+	return n
+}
+
+// shown marks the toasts that show: with no Limit every one, else the
+// highest priorities up to it, the oldest of one priority first, and
+// every ending toast while it leaves.
+func (m *Manager[K, V]) shown() []bool {
+	shown := make([]bool, len(m.entries))
+	if m.Limit <= 0 {
+		for i := range shown {
+			shown[i] = true
+		}
+		return shown
+	}
+	var waiting []int
+	for i, e := range m.entries {
+		if e.Status == Ending {
+			shown[i] = true
+			continue
+		}
+		waiting = append(waiting, i)
+	}
+	slices.SortStableFunc(waiting, func(a, b int) int {
+		if c := cmp.Compare(m.entries[b].Priority, m.entries[a].Priority); c != 0 {
+			return c
+		}
+		return cmp.Compare(a, b)
+	})
+	for i, at := range waiting {
+		if i >= m.Limit {
+			break
+		}
+		shown[at] = true
+	}
+	return shown
 }
 
 // Get returns the value of the toast with id.

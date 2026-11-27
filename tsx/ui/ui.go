@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/nsgo-dev/nsgo/base"
+	"github.com/nsgo-dev/nsgo/base/toast"
 	"github.com/nsgo-dev/nsgo/core"
 	"github.com/nsgo-dev/nsgo/tsx"
 	tsxdiff "github.com/nsgo-dev/nsgo/tsx/diff"
@@ -154,6 +155,7 @@ var enums = []tsx.Option{
 		"bottomStart": ui.ToastBottomStart, "bottomEnd": ui.ToastBottomEnd, "start": ui.ToastStart, "end": ui.ToastEnd}),
 	tsx.Enum(map[string]ui.ToastSwipe{"edge": ui.ToastSwipeEdge, "left": ui.ToastSwipeLeft, "right": ui.ToastSwipeRight, "up": ui.ToastSwipeUp,
 		"down": ui.ToastSwipeDown, "off": ui.ToastSwipeOff}),
+	tsx.Enum(map[string]toast.Priority{"normal": toast.PriorityNormal, "high": toast.PriorityHigh}),
 	tsx.Enum(map[string]base.TimePrecision{"minute": base.TimeMinute, "second": base.TimeSecond}),
 	tsx.Enum(map[string]base.HourCycle{"h23": base.HourCycle23, "h12": base.HourCycle12}),
 	tsx.Enum(map[string]base.ColorFormat{"hex": base.ColorFormatHex, "rgb": base.ColorFormatRGB, "hsl": base.ColorFormatHSL,

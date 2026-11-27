@@ -98,6 +98,9 @@ type Toast struct {
 	// alert: for a toast that reports something done, not a failure. A
 	// toast with OnPress stays a button.
 	Polite bool
+	// PoliteFunc is Polite when it changes while the toast shows, as when
+	// a toast replaces it; it wins over Polite.
+	PoliteFunc func() bool
 	// OnDismissRequest: the user swiped it away; dismiss it. It stays
 	// where the swipe took it.
 	OnDismissRequest func()
@@ -119,21 +122,37 @@ func (t Toast) Render(cx *core.Scope) core.Node {
 		}
 		return t.Status()
 	}
+	polite := core.NewMemo(cx, func() bool {
+		if t.PoliteFunc != nil {
+			return t.PoliteFunc()
+		}
+		return t.Polite
+	})
+	statusRegion := func() bool { return polite.Get() && t.OnPress == nil }
 	label := t.Label
 	if t.LabelFunc != nil {
-		label = t.LabelFunc()
+		label = core.Untracked(cx, t.LabelFunc)
 	}
-	if label != "" {
+	said := ""
+	if label != "" && !core.Untracked(cx, statusRegion) {
 		cx.Announce(label)
+		said = label
 	}
-	if t.LabelFunc != nil {
-		said := label
+	if t.LabelFunc != nil || t.PoliteFunc != nil {
 		cx.Effect(func() {
-			if l := t.LabelFunc(); l != said {
+			l := t.Label
+			if t.LabelFunc != nil {
+				l = t.LabelFunc()
+			}
+			if statusRegion() {
+				// RoleStatus is already a polite live region; calling Announce
+				// too would read it twice and interrupt speech.
+				said = ""
+				return
+			}
+			if l != "" && l != said {
 				said = l
-				if l != "" {
-					cx.Announce(l)
-				}
+				cx.Announce(l)
 			}
 		})
 	}
@@ -188,87 +207,95 @@ func (t Toast) Render(cx *core.Scope) core.Node {
 	if t.LabelFunc != nil {
 		rootLabel = ""
 	}
-	role := core.RoleAlert
-	if t.Polite {
-		role = core.RoleStatus
-	}
-	if t.OnPress != nil {
-		role = core.RoleButton
-	}
 	var onPress func(core.PressEvent)
 	if t.OnPress != nil {
 		onPress = func(core.PressEvent) { t.OnPress() }
 	}
-	root := core.View{Role: role, Label: rootLabel, LabelFunc: t.LabelFunc, TestID: t.TestID, Tooltip: t.Tooltip, Class: t.Class, OnPress: onPress,
-		// The state's classes win over Class and Style, as its styles do
-		// and as CSS's state selectors do by their specificity.
-		ClassFunc: func() string {
-			switch st := status(); {
-			case st == Ending:
-				return endingClass
-			case swiping.Get():
-				return swipingClass
-			case st == Starting && !entered.Get():
-				return startingClass
-			}
-			return ""
-		},
-		Style: t.Style,
-		StyleFunc: func() core.Style {
-			var s core.Style
-			if t.StyleFunc != nil {
-				s = t.StyleFunc()
-			}
-			switch st := status(); {
-			case st == Ending:
-				s = s.Merge(t.EndingStyle)
-			case swiping.Get():
-				s = s.Merge(t.SwipingStyle)
-			case st == Starting && !entered.Get():
-				s = s.Merge(t.StartingStyle)
-			}
-			return s
-		},
-		OnLayout: func(b core.Bounds) {
-			size = b.Size
-			if t.OnLayout != nil {
-				t.OnLayout(b)
-			}
-		},
-		OnTouch: func(e core.TouchEvent) {
-			if e.Phase == core.TouchStart && len(e.Touches) > 0 {
-				down = e.Touches[0].PagePosition
-			}
-		},
-		Responder: &core.Responder{
-			Claims: []core.TouchClaim{{OnMove: true, Ask: func(e core.ResponderEvent) bool {
-				if dir == SwipeOff || core.Untracked(cx, status) == Ending {
-					return false
+	makeRoot := func(isPolite bool) core.Node {
+		role := core.RoleAlert
+		if isPolite {
+			role = core.RoleStatus
+		}
+		if t.OnPress != nil {
+			role = core.RoleButton
+		}
+		return core.View{Role: role, Label: rootLabel, LabelFunc: t.LabelFunc, TestID: t.TestID, Tooltip: t.Tooltip, Class: t.Class, OnPress: onPress,
+			// The state's classes win over Class and Style, as its styles do
+			// and as CSS's state selectors do by their specificity.
+			ClassFunc: func() string {
+				switch st := status(); {
+				case st == Ending:
+					return endingClass
+				case swiping.Get():
+					return swipingClass
+				case st == Starting && !entered.Get():
+					return startingClass
 				}
-				d := e.Gesture.Delta
-				main, cross := d.Y, d.X
-				if dir.horizontal() {
-					main, cross = d.X, d.Y
-				}
-				return dir.along(d) >= toastSwipeSlop && abs(main) > abs(cross)
-			}}},
-			Keep:    true,
-			OnGrant: func(core.ResponderEvent) { swiping.Set(true) },
-			OnMove: func(e core.ResponderEvent) {
-				// Toward the direction only.
-				tx, ty := dir.to(max(dir.along(moved(e)), 0))
-				x.Set(tx)
-				y.Set(ty)
+				return ""
 			},
-			OnRelease:   release,
-			OnTerminate: func(core.ResponderEvent) { swiping.Set(false); settle(0, 0) },
-		},
-		// What is going takes no more presses.
-		Children: append(slices.Clip(t.Children), core.Show{When: func() bool { return status() == Ending }, Then: func(*core.Scope) core.Node {
-			return core.View{Style: parts.Fill, OnPress: func(core.PressEvent) {}, NoFocus: true}
-		}}),
+			Style: t.Style,
+			StyleFunc: func() core.Style {
+				var s core.Style
+				if t.StyleFunc != nil {
+					s = t.StyleFunc()
+				}
+				switch st := status(); {
+				case st == Ending:
+					s = s.Merge(t.EndingStyle)
+				case swiping.Get():
+					s = s.Merge(t.SwipingStyle)
+				case st == Starting && !entered.Get():
+					s = s.Merge(t.StartingStyle)
+				}
+				return s
+			},
+			OnLayout: func(b core.Bounds) {
+				size = b.Size
+				if t.OnLayout != nil {
+					t.OnLayout(b)
+				}
+			},
+			OnTouch: func(e core.TouchEvent) {
+				if e.Phase == core.TouchStart && len(e.Touches) > 0 {
+					down = e.Touches[0].PagePosition
+				}
+			},
+			Responder: &core.Responder{
+				Claims: []core.TouchClaim{{OnMove: true, Ask: func(e core.ResponderEvent) bool {
+					if dir == SwipeOff || core.Untracked(cx, status) == Ending {
+						return false
+					}
+					d := e.Gesture.Delta
+					main, cross := d.Y, d.X
+					if dir.horizontal() {
+						main, cross = d.X, d.Y
+					}
+					return dir.along(d) >= toastSwipeSlop && abs(main) > abs(cross)
+				}}},
+				Keep:    true,
+				OnGrant: func(core.ResponderEvent) { swiping.Set(true) },
+				OnMove: func(e core.ResponderEvent) {
+					// Toward the direction only.
+					tx, ty := dir.to(max(dir.along(moved(e)), 0))
+					x.Set(tx)
+					y.Set(ty)
+				},
+				OnRelease:   release,
+				OnTerminate: func(core.ResponderEvent) { swiping.Set(false); settle(0, 0) },
+			},
+			// What is going takes no more presses.
+			Children: append(slices.Clip(t.Children), core.Show{When: func() bool { return status() == Ending }, Then: func(*core.Scope) core.Node {
+				return core.View{Style: parts.Fill, OnPress: func(core.PressEvent) {}, NoFocus: true}
+			}}),
+		}
 	}
-	return core.View{Style: core.Style{Animated: &core.AnimatedStyle{TranslateX: x, TranslateY: y}}, Children: []core.Node{root}}
+	var child core.Node
+	if t.PoliteFunc != nil {
+		child = core.Dynamic(func(*core.Scope) core.Node { return makeRoot(polite.Get()) })
+	} else {
+		child = makeRoot(t.Polite)
+	}
+	return core.View{Style: core.Style{Animated: &core.AnimatedStyle{TranslateX: x, TranslateY: y}}, Children: []core.Node{child}}
 }
 
 func abs(p core.Points) core.Points { return max(p, -p) }

@@ -92,7 +92,11 @@ func (r *runtime) toastMotion(v js.Value) toast.Motion {
 // app's clock.
 func (r *runtime) toastManagerClass() js.Value {
 	class := r.vm.ToValue(func(call js.ConstructorCall) *js.Object {
-		m := &toastManager{Motion: r.toastMotion(call.Argument(0))}
+		opt := r.options(call.Argument(0))
+		m := &toastManager{
+			Motion: r.toastMotion(call.Argument(0)),
+			Limit:  int(opt.float("limit", 0)),
+		}
 		_ = call.This.SetSymbol(toastKey, m)
 		return nil
 	}).(*js.Object)
@@ -119,8 +123,11 @@ func (r *runtime) toastManagerClass() js.Value {
 		_ = o.Set("value", e.Value)
 		_ = o.Set("status", map[toast.Status]string{toast.Starting: "starting", toast.Present: "present",
 			toast.Ending: "ending"}[e.Status])
-		_ = o.Set("priority", map[toast.Priority]string{toast.PriorityNormal: "normal",
-			toast.PriorityHigh: "high"}[e.Priority])
+		priority := "normal"
+		if e.Priority == toast.PriorityHigh {
+			priority = "high"
+		}
+		_ = o.Set("priority", priority)
 		return o
 	}
 	entries := func(es []toast.Entry[string, js.Value]) js.Value {
@@ -139,8 +146,13 @@ func (r *runtime) toastManagerClass() js.Value {
 		return r.vm.NewArray(out...)
 	}
 	method("push", func(m *toastManager, call js.FunctionCall) js.Value {
-		timeout := millis(r.options(arg(call, 2)).float("timeout", 4000))
-		old, ok := m.Push(arg(call, 0).String(), arg(call, 1), timeout, now())
+		opt := r.options(arg(call, 2))
+		timeout := millis(opt.float("timeout", 4000))
+		priority := toast.PriorityNormal
+		if opt.str("priority", "") == "high" {
+			priority = toast.PriorityHigh
+		}
+		old, ok := m.PushPriority(arg(call, 0).String(), arg(call, 1), timeout, priority, now())
 		if !ok {
 			return js.Null()
 		}
@@ -163,10 +175,16 @@ func (r *runtime) toastManagerClass() js.Value {
 	})
 	method("entries", func(m *toastManager, call js.FunctionCall) js.Value { return entries(m.Entries()) })
 	method("visible", func(m *toastManager, call js.FunctionCall) js.Value {
-		// The limit queues the rest behind the toasts showing.
-		m.Limit = int(arg(call, 0).ToInteger())
+		if v := arg(call, 0); defined(v) {
+			saved := m.Limit
+			m.Limit = int(v.ToInteger())
+			out := m.Visible()
+			m.Limit = saved
+			return entries(out)
+		}
 		return entries(m.Visible())
 	})
+	method("waiting", func(m *toastManager, call js.FunctionCall) js.Value { return r.vm.ToValue(m.Waiting()) })
 	method("get", func(m *toastManager, call js.FunctionCall) js.Value {
 		v, ok := m.Get(arg(call, 0).String())
 		if !ok {

@@ -14,6 +14,7 @@ import (
 	"github.com/nsgo-dev/nsgo/icons/lucide"
 	"github.com/nsgo-dev/nsgo/internal/driver"
 	"github.com/nsgo-dev/nsgo/nsgotest"
+	"github.com/nsgo-dev/nsgo/tsx"
 	"github.com/nsgo-dev/nsgo/tsx/compiler"
 )
 
@@ -189,6 +190,42 @@ mount(App);`)}}
 	}
 	if got := app.Find("id:custom").Style.CornerRadius; got != 30 {
 		t.Fatalf("per-toast style did not update: %v", got)
+	}
+}
+
+func TestToastPriorityFromTSX(t *testing.T) {
+	decl := tsx.Declarations()["types/nsgo/ui.d.ts"]
+	if !strings.Contains(decl, `export type ToastPriority = "high" | "normal";`) || !strings.Contains(decl, `priority?: ToastPriority`) {
+		t.Fatalf("ui.d.ts missing ToastPriority enum or optional priority field:\n%s", decl)
+	}
+	files := fstest.MapFS{"App.tsx": {Data: []byte(`import { mount, signal, View } from "nsgo";
+import { Button, Toasts } from "nsgo/ui";
+function App() {
+    const toasts = signal(null);
+    return <View>
+        <Button testID="normal-err" onPress={() => {
+            toasts()?.show({id: "a", title: "A", duration: -1, priority: "normal"});
+            toasts()?.show({id: "b", title: "B", duration: -1, priority: "normal"});
+            toasts()?.show({id: "c", title: "C", duration: -1, priority: "normal"});
+            toasts()?.show({id: "err-normal", type: "error", title: "Minor", duration: -1, priority: "normal"});
+        }}>NormalErr</Button>
+        <Button testID="default-err" onPress={() => {
+            toasts()?.show({id: "err-default", type: "error", title: "Major", duration: -1});
+        }}>DefaultErr</Button>
+        <Toasts placement="bottom" ref={toasts.set} />
+    </View>;
+}
+mount(App);`)}}
+	app := nsgotest.Start(t, compiler.App(files, "App.tsx"))
+	app.Press("id:normal-err")
+	app.Advance(time.Second)
+	if !app.Exists("id:a") || !app.Exists("id:b") || !app.Exists("id:c") || app.Exists("id:err-normal") {
+		t.Fatalf("explicit priority='normal' error preempted queue\n%s", app.Dump())
+	}
+	app.Press("id:default-err")
+	app.Advance(time.Second)
+	if !app.Exists("id:err-default") {
+		t.Fatalf("default priority error did not preempt normal toasts\n%s", app.Dump())
 	}
 }
 

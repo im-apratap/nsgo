@@ -42,6 +42,7 @@ var enumOptions = []Option{
 		"left": toast.SwipeLeft, "right": toast.SwipeRight}),
 	Enum(map[string]toast.Status{"starting": toast.Starting, "present": toast.Present,
 		"ending": toast.Ending}),
+	Enum(map[string]toast.Priority{"normal": toast.PriorityNormal, "high": toast.PriorityHigh}),
 	Enum(map[string]base.Reason{"cancel": base.ReasonCancel, "backdropPress": base.ReasonBackdropPress,
 		"swipe": base.ReasonSwipe, "pressOutside": base.ReasonPressOutside, "triggerPress": base.ReasonTriggerPress,
 		"hover": base.ReasonHover, "select": base.ReasonSelect, "contextMenu": base.ReasonContextMenu,

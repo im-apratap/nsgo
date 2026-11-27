@@ -1,11 +1,13 @@
 package tsx_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/nsgo-dev/nsgo/core"
 	"github.com/nsgo-dev/nsgo/nsgotest"
+	"github.com/nsgo-dev/nsgo/tsx"
 )
 
 // Each binding of nsgo/base in an app: what TSX passes reaches the Go
@@ -153,6 +155,39 @@ mount(App);`)
 	app.WaitFor("text:said false true", time.Second)
 	app.Press("id:all")
 	app.WaitFor("text:said b", time.Second)
+}
+
+func TestToastManagerQueuePriorityAndVisibleLimit(t *testing.T) {
+	decl := tsx.Declarations()["types/nsgo/base.d.ts"]
+	for _, want := range []string{`export type ToastPriority = "normal" | "high";`, `priority: ToastPriority`, `visible(limit?: number | null): ToastEntry[];`, `waiting(): number;`} {
+		if !strings.Contains(decl, want) {
+			t.Errorf("base.d.ts missing %q", want)
+		}
+	}
+	app := run(t, `import { mount, signal, Text, View } from "nsgo";
+import { ToastManager } from "nsgo/base";
+const toasts = new ToastManager({ limit: 1 });
+function App() {
+	const said = signal("");
+	return <View>
+		<Text testID="go" onPress={() => {
+			toasts.push("a", "A", { timeout: null });
+			toasts.push("b", "B", { timeout: null });
+			const v1 = toasts.visible().map((e) => e.id + ":" + e.priority).join();
+			const v2 = toasts.visible(2).map((e) => e.id).join();
+			const v3 = toasts.visible().map((e) => e.id).join();
+			const w1 = toasts.waiting();
+			toasts.push("e", "Err", { timeout: null, priority: "high" });
+			const v4 = toasts.visible().map((e) => e.id + ":" + e.priority).join();
+			const w2 = toasts.waiting();
+			said.set([v1, v2, v3, w1, v4, w2].join(" | "));
+		}}>Go</Text>
+		<Text>{() => "said " + said()}</Text>
+	</View>;
+}
+mount(App);`)
+	app.Press("id:go")
+	app.WaitFor("text:said a:normal | a,b | a | 1 | e:high | 2", time.Second)
 }
 
 func TestAlertDialogNeedsActions(t *testing.T) {

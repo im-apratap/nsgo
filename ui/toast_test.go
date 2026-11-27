@@ -457,6 +457,154 @@ func TestToastsQueue(t *testing.T) {
 		if !app.Exists("bad") {
 			t.Fatal("a toast timed out while the app was in the background")
 		}
+		// Returning to the foreground resumes the timeout and lets it expire.
 		app.SetEnvironment(core.Environment{Lifecycle: core.LifecycleActive})
+		app.Advance(3 * time.Second)
+		if app.Exists("bad") || !app.Exists("first") {
+			t.Fatalf("after returning to foreground: bad=%v first=%v\n%s", app.Exists("bad"), app.Exists("first"), app.Dump())
+		}
 	})
+}
+
+func TestToastsMotionAndReduceMotion(t *testing.T) {
+	var toaster *Toaster
+	custom := toast.Motion{Duration: 800 * time.Millisecond, ExitDuration: 600 * time.Millisecond}
+	app, _ := start(t, desktopEnv, func(cx *core.Scope) core.Node {
+		toaster = NewToaster(cx)
+		return Toasts{Toaster: toaster, Motion: custom, CloseLabel: "Close"}
+	})
+	toaster.Show(ToastContent{ID: "slow", Title: "Slow", Duration: -1})
+	app.Advance(time.Second)
+	if got := app.Find("slow").Style.Transition.Duration; got != custom.Duration {
+		t.Fatalf("enter transition = %v, want %v", got, custom.Duration)
+	}
+	toaster.Dismiss("slow")
+	app.Advance(300 * time.Millisecond)
+	if !app.Exists("slow") {
+		t.Fatal("toast left before custom ExitDuration (600ms)")
+	}
+	if got := app.FindMounted("id:slow").Style.Transition.Duration; got != custom.ExitDuration {
+		t.Fatalf("exit transition = %v, want %v", got, custom.ExitDuration)
+	}
+	app.Advance(400 * time.Millisecond)
+	if app.Exists("slow") {
+		t.Fatal("toast stayed after custom ExitDuration")
+	}
+
+	// Runtime ReduceMotion switches transitions to 0 and skips exit wait.
+	toaster.Show(ToastContent{ID: "live", Title: "Live", Duration: -1})
+	app.Advance(time.Second)
+	app.SetEnvironment(core.Environment{ReduceMotion: true})
+	if got := app.Find("live").Style.Transition.Duration; got != 0 {
+		t.Fatalf("transition under ReduceMotion = %v, want 0", got)
+	}
+	toaster.Dismiss("live")
+	app.Advance(100 * time.Millisecond)
+	if app.Exists("live") {
+		t.Fatal("toast waited for ExitDuration under ReduceMotion")
+	}
+
+	// Turning ReduceMotion back off restores the configured motion.
+	app.SetEnvironment(core.Environment{ReduceMotion: false})
+	toaster.Show(ToastContent{ID: "back", Title: "Back", Duration: -1})
+	app.Advance(time.Second)
+	if got := app.Find("back").Style.Transition.Duration; got != custom.Duration {
+		t.Fatalf("transition after leaving ReduceMotion = %v, want %v", got, custom.Duration)
+	}
+}
+
+func TestToastsDismissWaitingNeverShowsOrAnnounces(t *testing.T) {
+	var toaster *Toaster
+	var waiting int
+	firstClosed, secondClosed, thirdClosed := 0, 0, 0
+	app, _ := start(t, desktopEnv, func(cx *core.Scope) core.Node {
+		toaster = NewToaster(cx)
+		toaster.Limit = 1
+		return core.View{Style: core.Style{FlexGrow: 1}, Children: []core.Node{
+			core.Dynamic(func(*core.Scope) core.Node { waiting = toaster.Waiting(); return core.View{} }),
+			Toasts{Toaster: toaster, TestID: "toasts"},
+		}}
+	})
+	toaster.Show(ToastContent{ID: "first", Title: "First", Duration: -1, Priority: toast.PriorityNormal, OnClose: func() { firstClosed++ }})
+	toaster.Show(ToastContent{ID: "second", Title: "Second", Duration: -1, Priority: toast.PriorityNormal, OnClose: func() { secondClosed++ }})
+	toaster.Show(ToastContent{ID: "third", Title: "Third", Duration: -1, Priority: toast.PriorityNormal, OnClose: func() { thirdClosed++ }})
+	app.Advance(100 * time.Millisecond)
+	if waiting != 2 || !app.Exists("first") || app.Exists("second") || app.Exists("third") {
+		t.Fatalf("initial state: waiting=%d first=%v second=%v third=%v", waiting, app.Exists("first"), app.Exists("second"), app.Exists("third"))
+	}
+
+	toaster.Dismiss("second")
+	if app.Exists("second") || waiting != 1 {
+		t.Fatalf("after dismissing waiting toast: exists=%v waiting=%d", app.Exists("second"), waiting)
+	}
+	app.Advance(100 * time.Millisecond)
+	if secondClosed != 1 {
+		t.Fatalf("second OnClose = %d, want 1", secondClosed)
+	}
+	if slices.Contains(app.Announced, "Second") {
+		t.Fatalf("dismissed waiting toast was announced: %v", app.Announced)
+	}
+
+	toaster.DismissAll()
+	if app.Exists("third") || waiting != 0 {
+		t.Fatalf("after DismissAll: third=%v waiting=%d", app.Exists("third"), waiting)
+	}
+	app.Advance(time.Second)
+	if firstClosed != 1 || thirdClosed != 1 {
+		t.Fatalf("OnClose counts: first=%d third=%d, want 1 each", firstClosed, thirdClosed)
+	}
+	if slices.Contains(app.Announced, "Third") {
+		t.Fatalf("waiting toast dismissed by DismissAll was announced: %v", app.Announced)
+	}
+}
+
+func TestToastsPriorityOptOutAndPoliteMergeAndLimitChange(t *testing.T) {
+	var toaster *Toaster
+	var waiting int
+	app, _ := start(t, desktopEnv, func(cx *core.Scope) core.Node {
+		toaster = NewToaster(cx)
+		toaster.Limit = 1
+		return core.View{Style: core.Style{FlexGrow: 1}, Children: []core.Node{
+			core.Dynamic(func(*core.Scope) core.Node { waiting = toaster.Waiting(); return core.View{} }),
+			Toasts{Toaster: toaster, TestID: "toasts", Polite: true},
+		}}
+	})
+
+	// Explicit PriorityNormal on a sticky toast and an error keeps them in turn.
+	toaster.Show(ToastContent{ID: "job", Type: ToastInfo, Title: "Uploading", Duration: -1, Priority: toast.PriorityNormal})
+	toaster.Show(ToastContent{ID: "minor", Type: ToastError, Title: "Minor error", Duration: -1, Priority: toast.PriorityNormal})
+	app.Advance(time.Second)
+	if !app.Exists("job") || app.Exists("minor") || waiting != 1 {
+		t.Fatalf("explicit PriorityNormal error preempted queue: job=%v minor=%v waiting=%d", app.Exists("job"), app.Exists("minor"), waiting)
+	}
+
+	// Polite info toast is RoleStatus with LiveRegionPolite and is not double-announced.
+	if v := app.Find("job"); v.Props.Role != core.RoleStatus || v.Props.LiveRegion != core.LiveRegionPolite {
+		t.Fatalf("polite info toast: role=%v live=%v, want status+polite", v.Props.Role, v.Props.LiveRegion)
+	}
+	if slices.Contains(app.Announced, "Uploading") {
+		t.Fatalf("polite status toast also triggered Announce: %v", app.Announced)
+	}
+
+	// Merging ToastInfo -> ToastError in place switches RoleStatus -> RoleAlert and announces the error.
+	toaster.Show(ToastContent{ID: "job", Type: ToastError, Title: "Upload failed", Duration: -1, Priority: toast.PriorityNormal})
+	app.Advance(100 * time.Millisecond)
+	if v := app.Find("job"); v.Props.Role != core.RoleAlert || v.Props.LiveRegion != core.LiveRegionNone {
+		t.Fatalf("merged error toast: role=%v live=%v, want alert+none", v.Props.Role, v.Props.LiveRegion)
+	}
+	if !slices.Contains(app.Announced, "Upload failed") {
+		t.Fatalf("merged error toast was not announced: %v", app.Announced)
+	}
+
+	// Changing Toaster.Limit at runtime updates shown and waiting.
+	toaster.Limit = 2
+	app.Advance(100 * time.Millisecond)
+	if !app.Exists("job") || !app.Exists("minor") || waiting != 0 {
+		t.Fatalf("after raising Toaster.Limit: job=%v minor=%v waiting=%d", app.Exists("job"), app.Exists("minor"), waiting)
+	}
+	toaster.Limit = 1
+	app.Advance(100 * time.Millisecond)
+	if !app.Exists("job") || app.Exists("minor") || waiting != 1 {
+		t.Fatalf("after lowering Toaster.Limit: job=%v minor=%v waiting=%d", app.Exists("job"), app.Exists("minor"), waiting)
+	}
 }

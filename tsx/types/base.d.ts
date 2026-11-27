@@ -104,24 +104,27 @@ export interface AlertDialogOptions {
 export interface AlertDialogModule { show(options: AlertDialogOptions): Promise<string | null> }
 export declare const AlertDialog: AlertDialogModule;
 
-export interface ToastEntry { id: string; value: unknown; status: ToastTransitionStatus }
+export type ToastPriority = "normal" | "high";
+export interface ToastEntry { id: string; value: unknown; status: ToastTransitionStatus; priority: ToastPriority }
 export interface ToastAdvance { changed: boolean; presented: string[]; ending: string[]; removed: ToastEntry[] }
 export interface ToastMotion { duration?: number | null; exitDuration?: number | null; collapsedPeek?: number | null; expandedGap?: number | null; collapsedScaleStep?: number | null; collapsedVisible?: number | null }
+export interface ToastManagerOptions extends ToastMotion { limit?: number | null }
 export declare class ToastManager {
-  constructor(motion?: ToastMotion | null);
+  constructor(options?: ToastManagerOptions | null);
   push(id: string, value: unknown, options?: ToastOptions | null): unknown | null;
   dismiss(id: string): boolean;
   dismissAll(): string[];
   advance(paused?: boolean | null): ToastAdvance;
   entries(): ToastEntry[];
-  visible(limit: number): ToastEntry[];
+  visible(limit?: number | null): ToastEntry[];
+  waiting(): number;
   get(id: string): unknown | null;
   len(): number;
   isEmpty(): boolean;
   dispose(): void;
 }
 /** How long a toast shows, in milliseconds; null keeps it. */
-export interface ToastOptions { timeout?: number | null }
+export interface ToastOptions { timeout?: number | null; priority?: ToastPriority | null }
 /** Where toasts stack on the screen. */
 export type Anchor = "topLeft" | "topCenter" | "topRight" | "bottomLeft" | "bottomCenter" | "bottomRight" | "leftCenter" | "rightCenter";
 export interface ToastStackProps {

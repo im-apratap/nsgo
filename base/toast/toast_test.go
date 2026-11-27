@@ -87,9 +87,12 @@ func TestToastWaitingKeepsItsTimeoutUntilItShows(t *testing.T) {
 	m.Push("waiting", 2, 5*time.Second, start)
 	m.Advance(start.Add(motion.Duration), false)
 	// The first expires while the second waits, its own timeout untouched.
-	at := start.Add(motion.Duration + 6*time.Second)
+	at := start.Add(motion.Duration + 5*time.Second)
 	if a := m.Advance(at, false); !slices.Equal(a.Ending, []string{"shown"}) {
 		t.Fatalf("advance = %+v, want the toast that timed out ending", a)
+	}
+	if got := ids(m.Visible()); !slices.Equal(got, []string{"shown", "waiting"}) {
+		t.Fatalf("visible = %v, want the waiting toast taking the leaving toast's slot", got)
 	}
 	gone := m.Advance(at.Add(motion.ExitDuration), false)
 	if len(gone.Removed) != 1 || gone.Removed[0].ID != "shown" {
@@ -98,19 +101,144 @@ func TestToastWaitingKeepsItsTimeoutUntilItShows(t *testing.T) {
 	if got := ids(m.Visible()); !slices.Equal(got, []string{"waiting"}) {
 		t.Fatalf("visible = %v, want the waiting toast", got)
 	}
-	// It shows with its whole timeout, which starts then.
-	shown := at.Add(motion.ExitDuration)
-	m.Advance(shown.Add(5*time.Second), false)
-	if s := m.Entries()[0].Status; s != toast.Present {
-		t.Errorf("status = %v, want present once it entered", s)
+	if s := m.Entries()[0].Status; s != toast.Starting {
+		t.Fatalf("status = %v, want starting during its entry motion", s)
 	}
-	m.Advance(shown.Add(9*time.Second), false)
+	// Once its entry finishes, its full 5 s timeout counts down from there.
+	if a := m.Advance(at.Add(motion.Duration), false); !slices.Equal(a.Presented, []string{"waiting"}) {
+		t.Fatalf("advance = %+v, want waiting presented after Duration", a)
+	}
+	presentAt := at.Add(motion.Duration)
+	m.Advance(presentAt.Add(4*time.Second), false)
 	if s := m.Entries()[0].Status; s != toast.Present {
 		t.Errorf("status = %v, want present 4 s into its 5", s)
 	}
-	m.Advance(shown.Add(11*time.Second), false)
-	if s := m.Entries()[0].Status; s != toast.Ending {
-		t.Errorf("status = %v, want ending once its timeout ran out", s)
+	if a := m.Advance(presentAt.Add(5*time.Second), false); !slices.Equal(a.Ending, []string{"waiting"}) {
+		t.Errorf("advance = %+v, want ending once its 5 s timeout ran out", a)
+	}
+}
+
+func TestToastDismissWaitingNeverShows(t *testing.T) {
+	motion := toast.SonnerMotion()
+	now := time.Unix(0, 0)
+	var m toast.Manager[string, int]
+	m.Limit = 1
+	m.Push("a", 1, 0, now)
+	m.Push("b", 2, 0, now)
+	m.Push("c", 3, 0, now)
+	if !m.Dismiss("b", now) {
+		t.Fatal("dismissing a waiting toast returned false")
+	}
+	if m.Dismiss("b", now) {
+		t.Fatal("dismissing an already removed waiting toast returned true")
+	}
+	if got := ids(m.Visible()); !slices.Equal(got, []string{"a"}) {
+		t.Fatalf("visible = %v, want only the shown toast", got)
+	}
+	if n := m.Waiting(); n != 1 {
+		t.Fatalf("waiting = %d, want 1", n)
+	}
+	if a := m.Advance(now, false); !a.Changed || len(a.Removed) != 1 || a.Removed[0].ID != "b" || a.Removed[0].Value != 2 {
+		t.Fatalf("advance = %+v, want b reported removed", a)
+	}
+	if got := m.DismissAll(now); !slices.Equal(got, []string{"a", "c"}) {
+		t.Fatalf("dismiss all = %v, want [a c]", got)
+	}
+	if got := ids(m.Visible()); !slices.Equal(got, []string{"a"}) {
+		t.Fatalf("visible after dismissAll = %v, want only the toast that was showing", got)
+	}
+	if n := m.Waiting(); n != 0 {
+		t.Fatalf("waiting after dismissAll = %d, want 0", n)
+	}
+	if a := m.Advance(now, false); !a.Changed || len(a.Removed) != 1 || a.Removed[0].ID != "c" {
+		t.Fatalf("advance after dismissAll = %+v, want waiting toast c removed immediately", a)
+	}
+	if a := m.Advance(now.Add(motion.ExitDuration), false); len(a.Removed) != 1 || a.Removed[0].ID != "a" || m.Len() != 0 {
+		t.Fatalf("advance after exit = %+v, len = %d", a, m.Len())
+	}
+}
+
+func TestToastDismissPromotionAndPreemptionKeepTime(t *testing.T) {
+	motion := toast.SonnerMotion()
+	t0 := time.Unix(0, 0)
+	var m toast.Manager[string, int]
+	m.Limit = 1
+	m.Push("a", 1, 0, t0)
+	m.Push("b", 2, 5*time.Second, t0)
+	m.Advance(t0.Add(motion.Duration), false)
+
+	// Dismissing "a" after a quiet gap promotes "b" with a fresh entry clock.
+	t1 := t0.Add(3 * time.Second)
+	m.Dismiss("a", t1)
+	m.Advance(t1.Add(motion.ExitDuration), false)
+	if got := m.Entries(); len(got) != 1 || got[0].ID != "b" || got[0].Status != toast.Starting {
+		t.Fatalf("entries = %+v, want b still starting after ExitDuration", got)
+	}
+	t2 := t1.Add(motion.Duration)
+	if a := m.Advance(t2, false); !slices.Equal(a.Presented, []string{"b"}) {
+		t.Fatalf("advance = %+v, want b presented after Duration", a)
+	}
+
+	// Count 1 s off "b", then preempt it with a high-priority toast.
+	tPreempt := t2.Add(time.Second)
+	m.Advance(tPreempt, false)
+	m.PushPriority("urgent", 3, 0, toast.PriorityHigh, tPreempt)
+	if got := ids(m.Visible()); !slices.Equal(got, []string{"urgent"}) {
+		t.Fatalf("visible = %v, want urgent", got)
+	}
+	m.Advance(tPreempt.Add(motion.Duration), false)
+
+	// Dismiss "urgent" 10 s later; "b" must return with its remaining 4 s intact.
+	tReturn := tPreempt.Add(10 * time.Second)
+	m.Dismiss("urgent", tReturn)
+	m.Advance(tReturn.Add(motion.ExitDuration), false)
+	if got := m.Entries(); len(got) != 1 || got[0].ID != "b" || got[0].Status != toast.Present {
+		t.Fatalf("entries after preemption = %+v, want b still present", got)
+	}
+	m.Advance(tReturn.Add(3500*time.Millisecond), false)
+	if s := m.Entries()[0].Status; s != toast.Present {
+		t.Fatalf("status = %v, want b still present with 500 ms left", s)
+	}
+	if a := m.Advance(tReturn.Add(4*time.Second), false); !slices.Equal(a.Ending, []string{"b"}) {
+		t.Fatalf("advance = %+v, want b ending after its remaining 4 s", a)
+	}
+}
+
+func TestToastLimitChangeAndNegativeMotion(t *testing.T) {
+	motion := toast.SonnerMotion()
+	t0 := time.Unix(0, 0)
+	var m toast.Manager[string, int]
+	m.Limit = 1
+	m.Push("a", 1, 0, t0)
+	m.Push("b", 2, 0, t0)
+	m.Advance(t0.Add(motion.Duration), false)
+
+	// Raising Limit reports a change and starts "b" fresh from now.
+	m.Limit = 2
+	t1 := t0.Add(5 * time.Second)
+	if a := m.Advance(t1, false); !a.Changed || !slices.Equal(ids(m.Visible()), []string{"a", "b"}) || m.Waiting() != 0 {
+		t.Fatalf("after raising limit: advance=%+v visible=%v waiting=%d", a, ids(m.Visible()), m.Waiting())
+	}
+	if s := m.Entries()[1].Status; s != toast.Starting {
+		t.Fatalf("b status = %v, want starting immediately after limit increase", s)
+	}
+
+	// Lowering Limit hides "b" again and reports a change.
+	m.Limit = 1
+	if a := m.Advance(t1.Add(100*time.Millisecond), false); !a.Changed || !slices.Equal(ids(m.Visible()), []string{"a"}) || m.Waiting() != 1 {
+		t.Fatalf("after lowering limit: advance=%+v visible=%v waiting=%d", a, ids(m.Visible()), m.Waiting())
+	}
+
+	// Negative durations disable entry and exit waits.
+	var still toast.Manager[string, int]
+	still.Motion = toast.Motion{Duration: -1, ExitDuration: -1}
+	still.Push("x", 1, 0, t0)
+	if a := still.Advance(t0, false); !slices.Equal(a.Presented, []string{"x"}) {
+		t.Fatalf("negative duration advance = %+v, want immediate present", a)
+	}
+	still.Dismiss("x", t0)
+	if a := still.Advance(t0, false); len(a.Removed) != 1 || a.Removed[0].ID != "x" || still.Len() != 0 {
+		t.Fatalf("negative exit duration advance = %+v, want immediate removal", a)
 	}
 }
 

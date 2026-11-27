@@ -70,7 +70,7 @@ func (b Badge) Render(*core.Scope) core.Node {
 
 `ui.ToastContent` 可以用 `NoClose` 隐藏关闭按钮，用 `Trailing` 添加尾部节点，并用 `OnPress` 让整条 toast 响应按压并关闭。`Toasts.NoClose` 隐藏整个堆栈的关闭按钮。
 
-`Toaster.Limit` 让 toast 排成队列：先显示最早的，错误和直到被关闭才消失的 toast 排在前面，超出上限的在原位等待，其超时从显示时才开始；`Toaster.Waiting` 给出等待的数量，供堆栈自己的计数使用。应用不在前台时，toast 的超时同样暂停。`Toasts.Polite` 把它们读作礼貌的状态区域而不是提醒，错误仍保持提醒；`Toasts.Motion` 设置进出动效，字段为零时取 Sonner 的，`ReduceMotion` 下没有动效。
+`Toaster.Limit` 让 toast 排成队列：先显示最早的，错误和直到被关闭才消失的 toast 默认排在前面（除非 `ToastContent.Priority` 显式设为 `PriorityNormal`；设为 `PriorityHigh` 可让任意 toast 排在等待中的普通 toast 前面），超出上限的在原位等待，其超时从显示时才开始；`Toaster.Waiting` 给出等待的数量，供堆栈自己的计数使用。应用不在前台时，toast 的超时同样暂停。`Toasts.Polite` 把它们读作礼貌的状态区域而不是提醒，错误仍保持提醒；`Toasts.Motion` 设置进出动效，字段为零时取 Sonner 的，`ReduceMotion` 下没有动效。
 
 `ui.Toasts.Style` 和 `StyleFunc` 可设置每条 toast 的表面样式，包括背景、边框、圆角和内边距。堆栈样式覆盖主题，随后合并单条 `ToastContent.Style` 和 `StyleFunc`。每一级的 `StyleFunc` 都在对应的 `Style` 之后合并，并随它读取的 signal 更新。样式中的 `Color` 会用于标题，并以较低不透明度用于描述，使文字在深色或彩色表面上保持清晰。进入、退出和滑动阶段继续应用各自的动效样式。在 TSX 中，通过 `Toasts` 的 `style` 属性设置堆栈样式，调用 `show` 时可用 `style` 或 `styleFunc` 设置单条 toast。
 

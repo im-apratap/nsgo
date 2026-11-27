@@ -44,8 +44,10 @@ type ToastContent struct {
 	// NoClose omits this toast's close button. Swipe, Escape and its timeout still dismiss it.
 	NoClose bool
 	OnClose func()
-	// Priority shows it before the toasts waiting; an error, or one that
-	// stays until it is dismissed, is PriorityHigh without asking.
+	// Priority orders waiting toasts: PriorityDefault (zero) gives an
+	// error or a toast that stays until it is dismissed PriorityHigh and
+	// others PriorityNormal; PriorityNormal keeps even an error or sticky
+	// toast in turn.
 	Priority toast.Priority
 	Duration time.Duration
 	// Style and StyleFunc style this toast's surface over the stack's style.
@@ -73,6 +75,7 @@ type Toaster struct {
 	Limit    int
 	cx       *core.Scope
 	manager  toast.Manager[string, ToastContent]
+	motion   toast.Motion
 	shown    *core.Signal[[]toastEntry]
 	waiting  *core.Signal[int]
 	expanded *core.Signal[bool]
@@ -87,6 +90,21 @@ func NewToaster(cx *core.Scope) *Toaster {
 		waiting: core.NewSignal(cx, 0), expanded: core.NewSignal(cx, false)}
 }
 
+// applyMotion writes t.motion to t.manager, zeroing enter and exit
+// durations when reduced motion is active.
+func (t *Toaster) applyMotion(reduce bool) {
+	m := t.motion
+	if reduce {
+		m.Duration = -1
+		m.ExitDuration = -1
+	}
+	t.manager.Motion = m
+}
+
+func (t *Toaster) syncMotion() {
+	t.applyMotion(core.Untracked(t.cx, t.cx.Env().ReduceMotion))
+}
+
 // Show shows c and returns its ID, made up when c has none.
 func (t *Toaster) Show(c ToastContent) string {
 	if c.ID == "" {
@@ -99,9 +117,15 @@ func (t *Toaster) Show(c ToastContent) string {
 	t.shows++
 	c.shown = t.shows
 	priority := c.Priority
-	if priority == toast.PriorityNormal && (c.Type == ToastError || c.Duration < 0) {
-		priority = toast.PriorityHigh
+	if priority == toast.PriorityDefault {
+		if c.Type == ToastError || c.Duration < 0 {
+			priority = toast.PriorityHigh
+		} else {
+			priority = toast.PriorityNormal
+		}
 	}
+	t.manager.Limit = t.limit()
+	t.syncMotion()
 	if old, ok := t.manager.PushPriority(c.ID, c, max(c.Duration, 0), priority, t.cx.Now()); ok && old.OnClose != nil {
 		old.OnClose()
 	}
@@ -123,14 +147,18 @@ func (t *Toaster) limit() int {
 
 // Dismiss closes the toast id.
 func (t *Toaster) Dismiss(id string) {
-	t.manager.Dismiss(id, t.cx.Now())
-	t.run()
+	t.manager.Limit = t.limit()
+	if t.manager.Dismiss(id, t.cx.Now()) {
+		t.run()
+	}
 }
 
 // DismissAll closes every toast.
 func (t *Toaster) DismissAll() {
-	t.manager.DismissAll(t.cx.Now())
-	t.run()
+	t.manager.Limit = t.limit()
+	if len(t.manager.DismissAll(t.cx.Now())) > 0 {
+		t.run()
+	}
 }
 
 // visible is the toasts to show.
@@ -158,7 +186,8 @@ func (t *Toaster) run() {
 
 func (t *Toaster) tick() {
 	t.manager.Limit = t.limit()
-	paused := t.expanded.GetUntracked() || t.cx.Env().Lifecycle() != core.LifecycleActive
+	t.syncMotion()
+	paused := t.expanded.GetUntracked() || core.Untracked(t.cx, t.cx.Env().Lifecycle) != core.LifecycleActive
 	a := t.manager.Advance(t.cx.Now(), paused)
 	if a.Changed {
 		t.shown.Set(t.visible())
@@ -288,6 +317,10 @@ type Toasts struct {
 // Render implements core.Node.
 func (ts Toasts) Render(cx *core.Scope) core.Node {
 	t := ts.Toaster
+	t.motion = ts.Motion
+	cx.Effect(func() {
+		t.applyMotion(cx.Env().ReduceMotion())
+	})
 	anchor, align := ts.Placement.anchor()
 	// An overlay sizes to its content: the window's width gives align room.
 	place := core.Style{Left: core.Pt(0), Width: core.Pct(100), AlignItems: align, Padding: core.All(16)}
@@ -335,12 +368,14 @@ func (ts Toasts) item(cx *core.Scope, e func() toastEntry) core.Node {
 	motion := ts.Motion
 	if motion.Duration == 0 {
 		motion.Duration = toast.SonnerMotion().Duration
+	} else if motion.Duration < 0 {
+		motion.Duration = 0
 	}
 	if motion.ExitDuration == 0 {
 		motion.ExitDuration = toast.SonnerMotion().ExitDuration
+	} else if motion.ExitDuration < 0 {
+		motion.ExitDuration = 0
 	}
-	// A motion is the app's, not the reader's: ReduceMotion leaves none.
-	reduce := core.Untracked(cx, cx.Env().ReduceMotion)
 	// The content, which changes only when a toast of the same ID replaces it: the entry changes whenever any toast's status does, and building the content again then would restart a leading spinner and drop a focused action.
 	content := core.NewMemoFunc(cx, func() ToastContent { return e().Value }, func(a, b ToastContent) bool { return a.shown == b.shown })
 	label := func() string {
@@ -424,7 +459,7 @@ func (ts Toasts) item(cx *core.Scope, e func() toastEntry) core.Node {
 		}
 	}
 	return toast.Toast{TestID: id, SwipeDirection: swipe,
-		Polite:           ts.Polite && content.Get().Type != ToastError,
+		PoliteFunc:       func() bool { return ts.Polite && content.Get().Type != ToastError },
 		LabelFunc:        label,
 		Status:           func() toast.Status { return e().Status },
 		OnDismissRequest: func() { t.Dismiss(id) },
@@ -443,7 +478,7 @@ func (ts Toasts) item(cx *core.Scope, e func() toastEntry) core.Node {
 			if e().Status == toast.Ending {
 				d = motion.ExitDuration
 			}
-			if reduce {
+			if cx.Env().ReduceMotion() {
 				d = 0
 			}
 			return core.Style{Direction: core.Row, AlignItems: align, Gap: 12,

@@ -463,6 +463,17 @@ func TestToastsQueue(t *testing.T) {
 		if app.Exists("bad") || !app.Exists("first") {
 			t.Fatalf("after returning to foreground: bad=%v first=%v\n%s", app.Exists("bad"), app.Exists("first"), app.Dump())
 		}
+		// A visible but unfocused window (LifecycleInactive) keeps counting down.
+		app.SetEnvironment(core.Environment{Lifecycle: core.LifecycleInactive})
+		toaster.Show(ToastContent{ID: "inactive", Type: ToastError, Title: "Inactive", Duration: 2 * time.Second})
+		app.Advance(time.Second)
+		if !app.Exists("inactive") {
+			t.Fatal("toast disappeared early while inactive")
+		}
+		app.Advance(2 * time.Second)
+		if app.Exists("inactive") {
+			t.Fatal("a toast paused while the app was inactive instead of only in the background")
+		}
 	})
 }
 

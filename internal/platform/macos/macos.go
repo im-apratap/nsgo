@@ -1323,7 +1323,7 @@ func (s *surface) environment() driver.Environment {
 	}
 }
 
-// lifecycle is the lifecycle of the surface's window, an embedded surface's host window: in the background while the app is hidden or the window is not visible, minimized or covered, active while the app is the active one. The app's own surface, in no window, and a tray icon's take the app's, appLifecycle.
+// lifecycle is the lifecycle of the surface's window, an embedded surface's host window: in the background while the app is hidden or the window is not visible, minimized or covered, active while the app is the active one. The app's own surface, in no window, and a tray icon's take the app's, appLifecycle. A test host's window ignores occlusionState so headless CI runners and occluded desktop test runs stay visible while isVisible is true.
 func (s *surface) lifecycle() driver.Lifecycle {
 	if s.window == 0 || s.kind == driver.SurfaceTrayIcon {
 		return appLifecycle()
@@ -1333,7 +1333,7 @@ func (s *surface) lifecycle() driver.Lifecycle {
 	if objc.Send[bool](app, sel("isHidden")) ||
 		!objc.Send[bool](s.window, sel("isVisible")) ||
 		objc.Send[bool](s.window, sel("isMiniaturized")) ||
-		objc.Send[uint](s.window, sel("occlusionState"))&occlusionVisible == 0 {
+		(s.test == nil && objc.Send[uint](s.window, sel("occlusionState"))&occlusionVisible == 0) {
 		return driver.LifecycleBackground
 	}
 	if objc.Send[bool](app, sel("isActive")) {

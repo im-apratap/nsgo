@@ -731,6 +731,7 @@ func (s *surface) orderFront() {
 		// In front, as a user sees it, but without taking the keyboard from the app the user works in.
 		w.Send(sel("orderFrontRegardless"))
 		w.Send(sel("makeKeyWindow"))
+		s.refresh()
 		return
 	}
 	nsApp().Send(sel("unhide:"), objc.ID(0))

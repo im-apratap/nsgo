@@ -68,7 +68,7 @@ const (
 // NewToaster, shows and dismisses toasts through it from anywhere, and
 // places a Toasts of it once over its content. NSGo's ToastManager keeps
 // their lifecycle; a toast's timeout pauses while the stack is open
-// under the pointer or a finger, and while the app is not in front.
+// under the pointer or a finger, and while the app is in the background.
 // Limit is how many show at once, 3 when 0: the oldest show, then the
 // rest in turn, an error or a running job's progress first.
 type Toaster struct {
@@ -187,7 +187,7 @@ func (t *Toaster) run() {
 func (t *Toaster) tick() {
 	t.manager.Limit = t.limit()
 	t.syncMotion()
-	paused := t.expanded.GetUntracked() || core.Untracked(t.cx, t.cx.Env().Lifecycle) != core.LifecycleActive
+	paused := t.expanded.GetUntracked() || core.Untracked(t.cx, t.cx.Env().Lifecycle) == core.LifecycleBackground
 	a := t.manager.Advance(t.cx.Now(), paused)
 	if a.Changed {
 		t.shown.Set(t.visible())

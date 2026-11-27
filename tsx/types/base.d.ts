@@ -118,6 +118,7 @@ export declare class ToastManager {
   entries(): ToastEntry[];
   visible(limit?: number | null): ToastEntry[];
   waiting(): number;
+  setLimit(limit: number): void;
   get(id: string): unknown | null;
   len(): number;
   isEmpty(): boolean;

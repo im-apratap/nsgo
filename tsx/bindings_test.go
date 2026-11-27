@@ -159,7 +159,7 @@ mount(App);`)
 
 func TestToastManagerQueuePriorityAndVisibleLimit(t *testing.T) {
 	decl := tsx.Declarations()["types/nsgo/base.d.ts"]
-	for _, want := range []string{`export type ToastPriority = "normal" | "high";`, `priority: ToastPriority`, `visible(limit?: number | null): ToastEntry[];`, `waiting(): number;`} {
+	for _, want := range []string{`export type ToastPriority = "normal" | "high";`, `priority: ToastPriority`, `visible(limit?: number | null): ToastEntry[];`, `waiting(): number;`, `setLimit(limit: number): void;`} {
 		if !strings.Contains(decl, want) {
 			t.Errorf("base.d.ts missing %q", want)
 		}
@@ -176,18 +176,22 @@ function App() {
 			const v1 = toasts.visible().map((e) => e.id + ":" + e.priority).join();
 			const v2 = toasts.visible(2).map((e) => e.id).join();
 			const v3 = toasts.visible().map((e) => e.id).join();
+			toasts.setLimit(2);
+			const v4 = toasts.visible().map((e) => e.id).join();
+			const w0 = toasts.waiting();
+			toasts.setLimit(1);
 			const w1 = toasts.waiting();
 			toasts.push("e", "Err", { timeout: null, priority: "high" });
-			const v4 = toasts.visible().map((e) => e.id + ":" + e.priority).join();
+			const v5 = toasts.visible().map((e) => e.id + ":" + e.priority).join();
 			const w2 = toasts.waiting();
-			said.set([v1, v2, v3, w1, v4, w2].join(" | "));
+			said.set([v1, v2, v3, v4, w0, w1, v5, w2].join(" | "));
 		}}>Go</Text>
 		<Text>{() => "said " + said()}</Text>
 	</View>;
 }
 mount(App);`)
 	app.Press("id:go")
-	app.WaitFor("text:said a:normal | a,b | a | 1 | e:high | 2", time.Second)
+	app.WaitFor("text:said a:normal | a,b | a | a,b | 0 | 1 | e:high | 2", time.Second)
 }
 
 func TestAlertDialogNeedsActions(t *testing.T) {

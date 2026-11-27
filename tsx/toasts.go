@@ -175,6 +175,7 @@ func (r *runtime) toastManagerClass() js.Value {
 	})
 	method("entries", func(m *toastManager, call js.FunctionCall) js.Value { return entries(m.Entries()) })
 	method("visible", func(m *toastManager, call js.FunctionCall) js.Value {
+		// A limit here only asks what would show; setLimit keeps one.
 		if v := arg(call, 0); defined(v) {
 			saved := m.Limit
 			m.Limit = int(v.ToInteger())
@@ -185,6 +186,10 @@ func (r *runtime) toastManagerClass() js.Value {
 		return entries(m.Visible())
 	})
 	method("waiting", func(m *toastManager, call js.FunctionCall) js.Value { return r.vm.ToValue(m.Waiting()) })
+	method("setLimit", func(m *toastManager, call js.FunctionCall) js.Value {
+		m.Limit = int(arg(call, 0).ToInteger())
+		return js.Undefined()
+	})
 	method("get", func(m *toastManager, call js.FunctionCall) js.Value {
 		v, ok := m.Get(arg(call, 0).String())
 		if !ok {
